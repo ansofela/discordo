@@ -1082,7 +1082,7 @@ func (ml *messagesList) open() {
 			go ml.openURL(urls[0])
 		} else {
 			attachment := msg.Attachments[0]
-			if strings.HasPrefix(attachment.ContentType, "image/") {
+			if isImageAttachment(attachment) {
 				go ml.openAttachment(msg.Attachments[0])
 			} else {
 				go ml.openURL(attachment.URL)
@@ -1157,7 +1157,7 @@ func (ml *messagesList) showAttachmentsList(urls []string, attachments []discord
 	for _, a := range attachments {
 		attachment := a
 		action := func() {
-			if strings.HasPrefix(attachment.ContentType, "image/") {
+			if isImageAttachment(attachment) {
 				go ml.openAttachment(attachment)
 			} else {
 				go ml.openURL(attachment.URL)
@@ -1190,15 +1190,25 @@ func (ml *messagesList) showAttachmentsList(urls []string, attachments []discord
 }
 
 func (ml *messagesList) openAttachment(attachment discord.Attachment) {
-	ml.showPreviewStatus("Loading image preview...")
+	imageAttachment := isImageAttachment(attachment)
+	if imageAttachment && ml.imagePreviewer.CanRenderInline() {
+		ml.showPreviewStatus("Loading image preview...")
+	} else {
+		ml.showPreviewStatus("Opening attachment...")
+	}
+
 	path, err := ml.downloadAttachment(attachment)
 	if err != nil {
-		ml.showPreviewStatus("Image download failed")
+		if imageAttachment {
+			ml.showPreviewStatus("Image download failed")
+		} else {
+			ml.showPreviewStatus("Attachment download failed")
+		}
 		slog.Error("failed to fetch the attachment", "err", err, "url", attachment.URL)
 		return
 	}
 
-	if strings.HasPrefix(attachment.ContentType, "image/") && ml.imagePreviewer.CanRenderInline() {
+	if imageAttachment && ml.imagePreviewer.CanRenderInline() {
 		if rendered, backend, err := ml.renderInlineImage(path); err == nil && rendered {
 			ml.showPreviewStatus(fmt.Sprintf("Inline preview (%s)", backend))
 			return
@@ -1214,6 +1224,36 @@ func (ml *messagesList) openAttachment(attachment discord.Attachment) {
 		return
 	}
 	ml.showPreviewStatus("")
+}
+
+func isImageAttachment(attachment discord.Attachment) bool {
+	contentType := strings.ToLower(strings.TrimSpace(attachment.ContentType))
+	if strings.HasPrefix(contentType, "image/") {
+		return true
+	}
+
+	if hasImageExtension(attachment.Filename) {
+		return true
+	}
+
+	return hasImageExtension(attachment.URL)
+}
+
+func hasImageExtension(value string) bool {
+	if value == "" {
+		return false
+	}
+
+	if parsed, err := url.Parse(value); err == nil && parsed.Path != "" {
+		value = parsed.Path
+	}
+
+	switch strings.ToLower(filepath.Ext(value)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".avif":
+		return true
+	default:
+		return false
+	}
 }
 
 func (ml *messagesList) downloadAttachment(attachment discord.Attachment) (string, error) {
