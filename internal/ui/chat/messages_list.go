@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/ayn2op/discordo/internal/clipboard"
 	"github.com/ayn2op/discordo/internal/config"
 	"github.com/ayn2op/discordo/internal/consts"
+	"github.com/ayn2op/discordo/internal/image_preview"
 	"github.com/ayn2op/discordo/internal/markdown"
 	"github.com/ayn2op/discordo/internal/ui"
 	"github.com/ayn2op/tview"
@@ -56,6 +58,7 @@ type messagesList struct {
 	itemByID map[discord.MessageID]*tview.TextView
 
 	attachmentsPicker *attachmentsPicker
+	imagePreviewer    *imagepreview.Previewer
 
 	fetchingMembers struct {
 		mu    sync.Mutex
@@ -87,6 +90,11 @@ func newMessagesList(cfg *config.Config, chatView *Model) *messagesList {
 		chatView: chatView,
 		renderer: markdown.NewRenderer(cfg),
 		itemByID: make(map[discord.MessageID]*tview.TextView),
+		imagePreviewer: imagepreview.New(imagepreview.RenderConfig{
+			Enable:    cfg.ImagePreview.Enable,
+			MaxWidth:  cfg.ImagePreview.MaxWidth,
+			MaxHeight: cfg.ImagePreview.MaxHeight,
+		}),
 	}
 	ml.attachmentsPicker = newAttachmentsPicker(cfg, chatView)
 
@@ -1182,36 +1190,86 @@ func (ml *messagesList) showAttachmentsList(urls []string, attachments []discord
 }
 
 func (ml *messagesList) openAttachment(attachment discord.Attachment) {
-	resp, err := http.Get(attachment.URL)
+	ml.showPreviewStatus("Loading image preview...")
+	path, err := ml.downloadAttachment(attachment)
 	if err != nil {
+		ml.showPreviewStatus("Image download failed")
 		slog.Error("failed to fetch the attachment", "err", err, "url", attachment.URL)
 		return
 	}
+
+	if strings.HasPrefix(attachment.ContentType, "image/") && ml.imagePreviewer.CanRenderInline() {
+		if rendered, backend, err := ml.renderInlineImage(path); err == nil && rendered {
+			ml.showPreviewStatus(fmt.Sprintf("Inline preview (%s)", backend))
+			return
+		} else if err != nil {
+			slog.Error("failed to render image preview", "err", err, "path", path)
+			ml.showPreviewStatus("Inline preview failed, opening external viewer")
+		}
+	}
+
+	if err := open.Start(path); err != nil {
+		slog.Error("failed to open attachment file", "err", err, "path", path)
+		ml.showPreviewStatus("Failed to open attachment")
+		return
+	}
+	ml.showPreviewStatus("")
+}
+
+func (ml *messagesList) downloadAttachment(attachment discord.Attachment) (string, error) {
+	resp, err := http.Get(attachment.URL)
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("unexpected status: %s", resp.Status)
+	}
 
 	path := filepath.Join(consts.CacheDir(), "attachments")
 	if err := os.MkdirAll(path, os.ModePerm); err != nil {
-		slog.Error("failed to create attachments dir", "err", err, "path", path)
-		return
+		return "", err
 	}
 
 	path = filepath.Join(path, attachment.Filename)
 	file, err := os.Create(path)
 	if err != nil {
-		slog.Error("failed to create attachment file", "err", err, "path", path)
-		return
+		return "", err
 	}
 	defer file.Close()
 
 	if _, err := io.Copy(file, resp.Body); err != nil {
-		slog.Error("failed to copy attachment to file", "err", err)
-		return
+		return "", err
 	}
 
-	if err := open.Start(path); err != nil {
-		slog.Error("failed to open attachment file", "err", err, "path", path)
-		return
+	return path, nil
+}
+
+func (ml *messagesList) renderInlineImage(path string) (bool, string, error) {
+	_, _, termW, termH := ml.InnerRect()
+	preview, backend, err := ml.imagePreviewer.Render(path, termW, termH/2)
+	if err != nil {
+		return false, "", err
 	}
+	if preview == "" {
+		return false, "", nil
+	}
+
+	fmt.Print("\n" + preview + "\n")
+	switch backend {
+	case imagepreview.BackendKitty:
+		return true, "kitty", nil
+	case imagepreview.BackendANSI:
+		return true, "ansi", nil
+	default:
+		return false, "", nil
+	}
+}
+
+func (ml *messagesList) showPreviewStatus(status string) {
+	ml.chatView.app.QueueUpdateDraw(func() {
+		ml.chatView.messageInput.SetTitle(status)
+	})
 }
 
 func (ml *messagesList) openURL(url string) {

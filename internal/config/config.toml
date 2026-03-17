@@ -68,6 +68,14 @@ expanded = "▾ "
 collapsed = "▸ "
 leaf = ""
 
+
+[image_preview]
+# Render image attachments inline in supported terminals.
+enable_image_preview = true
+# Maximum preview size in terminal cells.
+max_width = 72
+max_height = 20
+
 [icons]
 guild_category = ""
 guild_text = "#"

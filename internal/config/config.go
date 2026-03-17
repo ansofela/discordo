@@ -84,6 +84,12 @@ type (
 		Markers SidebarMarkersConfig `toml:"markers"`
 	}
 
+	ImagePreview struct {
+		Enable    bool `toml:"enable_image_preview"`
+		MaxWidth  int  `toml:"max_width"`
+		MaxHeight int  `toml:"max_height"`
+	}
+
 	Config struct {
 		AutoFocus bool   `toml:"auto_focus"`
 		Mouse     bool   `toml:"mouse"`
@@ -105,6 +111,7 @@ type (
 		Notifications   Notifications   `toml:"notifications"`
 		TypingIndicator TypingIndicator `toml:"typing_indicator"`
 		Sidebar         SidebarConfig   `toml:"sidebar"`
+		ImagePreview    ImagePreview    `toml:"image_preview"`
 
 		Icons Icons `toml:"icons"`
 
